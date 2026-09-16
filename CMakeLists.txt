@@ -1,3 +1,4 @@
+
 cmake_minimum_required(VERSION 3.20)
 project(AltManager LANGUAGES C CXX)
 
@@ -8,9 +9,7 @@ set(CMAKE_C_STANDARD 11)
 
 include(FetchContent)
 
-# ============================================================
-#  ImGui — سورس خام دانلود می‌شود (CMakeLists خودش اجرا نمی‌شود)
-# ============================================================
+# -------- ImGui (raw source, no add_subdirectory) --------
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -27,15 +26,12 @@ add_library(imgui STATIC
     "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp"
 )
-
 target_include_directories(imgui PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends"
 )
 
-# ============================================================
-#  MinHook — فقط سورس‌ها دانلود می‌شوند، CMakeLists اجرا نمی‌شود
-# ============================================================
+# -------- MinHook (raw source, compile straight into client.dll) --------
 FetchContent_Declare(
     minhook
     GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
@@ -50,20 +46,15 @@ set(MINHOOK_SOURCES
     "${minhook_SOURCE_DIR}/src/trampoline.c"
     "${minhook_SOURCE_DIR}/src/hde/hde64.c"
 )
-
 if(EXISTS "${minhook_SOURCE_DIR}/src/hde/table64.c")
     list(APPEND MINHOOK_SOURCES "${minhook_SOURCE_DIR}/src/hde/table64.c")
 endif()
 
-# ============================================================
-#  System deps
-# ============================================================
+# -------- System deps --------
 find_package(JNI REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# ============================================================
-#  client.dll  — MinHook مستقیم داخلش کامپایل می‌شود
-# ============================================================
+# -------- client.dll --------
 add_library(client SHARED
     src/client/accounts.cpp
     src/client/jni_helper.cpp
@@ -90,8 +81,6 @@ set_target_properties(client PROPERTIES
     OUTPUT_NAME "client"
 )
 
-# ============================================================
-#  injector.exe
-# ============================================================
+# -------- injector.exe --------
 add_executable(injector src/injector/injector.cpp)
 set_target_properties(injector PROPERTIES OUTPUT_NAME "injector")

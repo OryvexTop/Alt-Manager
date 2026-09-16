@@ -1,4 +1,13 @@
+
 build/
-*.user
+out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
 .vs/
+.vscode/
 __pycache__/

@@ -1,17 +1,41 @@
-# create_account.py — generates the whole project structure
-import pathlib
 
-ROOT = pathlib.Path(__file__).parent
-
-FILES = {}
-
-FILES[".gitignore"] = r"""
-build/
-*.user
-.vs/
-__pycache__/
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-FILES["CMakeLists.txt"] = r"""
+create_account.py
+-----------------
+Generates the full Alt-Manager project (CMakeLists.txt + all C++ sources).
+Run from the repo root:  python create_account.py
+"""
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).parent.resolve()
+
+def w(rel, content):
+    p = ROOT / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    print(f"[+] {rel}")
+
+# ---------------------------------------------------------------- .gitignore
+w(".gitignore", r"""
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+.vs/
+.vscode/
+__pycache__/
+""")
+
+# ---------------------------------------------------------------- CMakeLists
+w("CMakeLists.txt", r"""
 cmake_minimum_required(VERSION 3.20)
 project(AltManager LANGUAGES C CXX)
 
@@ -22,9 +46,7 @@ set(CMAKE_C_STANDARD 11)
 
 include(FetchContent)
 
-# ============================================================
-#  ImGui — سورس خام دانلود می‌شود (CMakeLists خودش اجرا نمی‌شود)
-# ============================================================
+# -------- ImGui (raw source, no add_subdirectory) --------
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -41,15 +63,12 @@ add_library(imgui STATIC
     "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp"
 )
-
 target_include_directories(imgui PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends"
 )
 
-# ============================================================
-#  MinHook — فقط سورس‌ها دانلود می‌شوند، CMakeLists اجرا نمی‌شود
-# ============================================================
+# -------- MinHook (raw source, compile straight into client.dll) --------
 FetchContent_Declare(
     minhook
     GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
@@ -64,20 +83,15 @@ set(MINHOOK_SOURCES
     "${minhook_SOURCE_DIR}/src/trampoline.c"
     "${minhook_SOURCE_DIR}/src/hde/hde64.c"
 )
-
 if(EXISTS "${minhook_SOURCE_DIR}/src/hde/table64.c")
     list(APPEND MINHOOK_SOURCES "${minhook_SOURCE_DIR}/src/hde/table64.c")
 endif()
 
-# ============================================================
-#  System deps
-# ============================================================
+# -------- System deps --------
 find_package(JNI REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# ============================================================
-#  client.dll  — MinHook مستقیم داخلش کامپایل می‌شود
-# ============================================================
+# -------- client.dll --------
 add_library(client SHARED
     src/client/accounts.cpp
     src/client/jni_helper.cpp
@@ -104,629 +118,585 @@ set_target_properties(client PROPERTIES
     OUTPUT_NAME "client"
 )
 
-# ============================================================
-#  injector.exe
-# ============================================================
+# -------- injector.exe --------
 add_executable(injector src/injector/injector.cpp)
 set_target_properties(injector PROPERTIES OUTPUT_NAME "injector")
-"""
+""")
 
-# ---------------- CLIENT ----------------
-
-FILES["src/client/accounts.h"] = r"""
+# ---------------------------------------------------------------- accounts.h
+w("src/client/accounts.h", r"""
 #pragma once
+#include <mutex>
 #include <string>
 #include <vector>
 
-namespace accounts {
-    std::vector<std::string>& Get();
-    int GetCurrentIndex();
-    void SetCurrent(int idx);
-    void Add(const std::string& name);
-    void Remove(int idx);
-    void Load();
-    void Save();
-}
-"""
+struct Account {
+    std::string username;
+    std::string uuid;
+    std::string token;
+};
 
-FILES["src/client/accounts.cpp"] = r"""
+class AccountManager {
+public:
+    static AccountManager& instance();
+
+    void add(const Account& acc);
+    bool remove(size_t index);
+    bool set_current(size_t index);
+
+    Account current() const;
+    int current_index() const;
+    bool has_current() const;
+    std::vector<Account> list() const;
+
+private:
+    AccountManager() = default;
+    mutable std::mutex mtx_;
+    std::vector<Account> accounts_;
+    int current_ = -1;
+};
+""")
+
+# ---------------------------------------------------------------- accounts.cpp
+w("src/client/accounts.cpp", r"""
 #include "accounts.h"
-#include <Windows.h>
-#include <ShlObj.h>
-#include <fstream>
 
-namespace accounts {
-    static std::vector<std::string> s_list;
-    static int s_current = -1;
-    static std::string s_path;
-
-    static std::string Path() {
-        char buf[MAX_PATH] = {};
-        SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf);
-        std::string dir = std::string(buf) + "\\.mc-account-switcher";
-        CreateDirectoryA(dir.c_str(), nullptr);
-        return dir + "\\accounts.txt";
-    }
-
-    void Load() {
-        s_path = Path();
-        s_list.clear();
-        s_current = -1;
-        std::ifstream f(s_path);
-        std::string line;
-        while (std::getline(f, line)) {
-            if (line.empty()) continue;
-            if (line[0] == '*') { s_current = (int)s_list.size(); line = line.substr(1); }
-            s_list.push_back(line);
-        }
-        if (s_current < 0 && !s_list.empty()) s_current = 0;
-    }
-
-    void Save() {
-        if (s_path.empty()) s_path = Path();
-        std::ofstream f(s_path, std::ios::trunc);
-        for (size_t i = 0; i < s_list.size(); i++) {
-            if ((int)i == s_current) f << "*";
-            f << s_list[i] << "\n";
-        }
-    }
-
-    std::vector<std::string>& Get() { if (s_path.empty()) Load(); return s_list; }
-    int  GetCurrentIndex() { if (s_path.empty()) Load(); return s_current; }
-    void SetCurrent(int i) { if (i >= 0 && i < (int)s_list.size()) { s_current = i; Save(); } }
-    void Add(const std::string& n) { s_list.push_back(n); if (s_current < 0) s_current = 0; Save(); }
-    void Remove(int i) {
-        if (i < 0 || i >= (int)s_list.size()) return;
-        s_list.erase(s_list.begin() + i);
-        if (s_current >= (int)s_list.size()) s_current = (int)s_list.size() - 1;
-        Save();
-    }
+AccountManager& AccountManager::instance() {
+    static AccountManager inst;
+    return inst;
 }
-"""
 
-FILES["src/client/jni_helper.h"] = r"""
-#pragma once
-#include <string>
-namespace jni_helper {
-    bool SwitchAccount(const std::string& username);
+void AccountManager::add(const Account& acc) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    accounts_.push_back(acc);
+    if (current_ < 0) current_ = 0;
 }
-"""
 
-FILES["src/client/jni_helper.cpp"] = r"""
-#include "jni_helper.h"
-#include <Windows.h>
-#include <jvmti.h>
-#include <jni.h>
-#include <string>
-#include <vector>
-
-namespace jni_helper {
-
-static JavaVM*  g_jvm   = nullptr;
-static jvmtiEnv* g_jvmti = nullptr;
-
-static bool Init() {
-    if (g_jvm) return true;
-    HMODULE h = GetModuleHandleA("jvm.dll");
-    if (!h) return false;
-    typedef jint (JNICALL *GetVMs_t)(JavaVM**, jsize, jsize*);
-    auto fn = (GetVMs_t)GetProcAddress(h, "JNI_GetCreatedJavaVMs");
-    if (!fn) return false;
-    jsize n = 0;
-    if (fn(&g_jvm, 1, &n) != JNI_OK || n == 0) return false;
-    if (g_jvm->GetEnv((void**)&g_jvmti, JVMTI_VERSION_1_2) != JNI_OK) return false;
-    jvmtiCapabilities caps = {};
-    caps.can_tag_objects = 1;
-    g_jvmti->AddCapabilities(&caps);
+bool AccountManager::remove(size_t index) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (index >= accounts_.size()) return false;
+    accounts_.erase(accounts_.begin() + index);
+    if (accounts_.empty()) current_ = -1;
+    else if (current_ >= (int)accounts_.size()) current_ = (int)accounts_.size() - 1;
     return true;
 }
 
-struct Klass { jclass k; std::string sig; };
+bool AccountManager::set_current(size_t index) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (index >= accounts_.size()) return false;
+    current_ = (int)index;
+    return true;
+}
 
-static std::vector<Klass> LoadClasses() {
-    std::vector<Klass> out;
-    jint n = 0; jclass* arr = nullptr;
-    if (g_jvmti->GetLoadedClasses(&n, &arr) != JVMTI_ERROR_NONE) return out;
-    for (int i = 0; i < n; i++) {
-        char* s = nullptr;
-        if (g_jvmti->GetClassSignature(arr[i], &s, nullptr) == JVMTI_ERROR_NONE && s) {
-            out.push_back({ arr[i], s });
-            g_jvmti->Deallocate((unsigned char*)s);
+Account AccountManager::current() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (current_ < 0 || current_ >= (int)accounts_.size()) return {};
+    return accounts_[current_];
+}
+
+int AccountManager::current_index() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return current_;
+}
+
+bool AccountManager::has_current() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return current_ >= 0 && current_ < (int)accounts_.size();
+}
+
+std::vector<Account> AccountManager::list() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return accounts_;
+}
+""")
+
+# ---------------------------------------------------------------- jni_helper.h
+w("src/client/jni_helper.h", r"""
+#pragma once
+#include <jni.h>
+#include <string>
+
+class JNIHelper {
+public:
+    static bool attach();
+    static void detach();
+    static bool is_attached();
+    static JavaVM* vm();
+    static JNIEnv* env();
+
+    // Reaches into the running Minecraft JVM and overwrites the live
+    // Session's username / uuid / token fields via reflection.
+    static bool apply_account(const std::string& username,
+                              const std::string& uuid,
+                              const std::string& token);
+};
+""")
+
+# ---------------------------------------------------------------- jni_helper.cpp
+w("src/client/jni_helper.cpp", r"""
+#include "jni_helper.h"
+#include <windows.h>
+#include <cstring>
+#include <string>
+
+static JavaVM*        g_vm  = nullptr;
+static thread_local JNIEnv* t_env = nullptr;
+
+JavaVM* JNIHelper::vm()          { return g_vm; }
+JNIEnv* JNIHelper::env()         { return t_env; }
+bool    JNIHelper::is_attached() { return t_env != nullptr; }
+
+bool JNIHelper::attach() {
+    if (t_env) return true;
+
+    if (!g_vm) {
+        jsize count = 0;
+        if (JNI_GetCreatedJavaVMs(&g_vm, 1, &count) != JNI_OK || count == 0) {
+            g_vm = nullptr;
+            return false;
         }
     }
-    g_jvmti->Deallocate((unsigned char*)arr);
+
+    jint rc = g_vm->GetEnv(reinterpret_cast<void**>(&t_env), JNI_VERSION_1_8);
+    if (rc == JNI_EDETACHED) {
+        if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&t_env), nullptr) != JNI_OK) {
+            t_env = nullptr;
+            return false;
+        }
+    } else if (rc != JNI_OK) {
+        t_env = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void JNIHelper::detach() {
+    if (g_vm && t_env) {
+        g_vm->DetachCurrentThread();
+        t_env = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------- helpers
+
+static jobjectArray call_getDeclaredFields(JNIEnv* e, jclass cls) {
+    jclass ccls = e->FindClass("java/lang/Class");
+    jmethodID m  = e->GetMethodID(ccls, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
+    if (!m) return nullptr;
+    return static_cast<jobjectArray>(e->CallObjectMethod(cls, m));
+}
+
+static std::string jstr(JNIEnv* e, jstring s) {
+    if (!s) return {};
+    const char* c = e->GetStringUTFChars(s, nullptr);
+    std::string out = c ? c : "";
+    e->ReleaseStringUTFChars(s, c);
     return out;
 }
 
-static bool HasFieldOfType(jclass k, const std::string& typeSig) {
-    jint n = 0; jfieldID* f = nullptr;
-    if (g_jvmti->GetClassFields(k, &n, &f) != JVMTI_ERROR_NONE) return false;
-    bool found = false;
-    for (int i = 0; i < n && !found; i++) {
-        char *name, *sig;
-        if (g_jvmti->GetFieldName(k, f[i], &name, &sig, nullptr) == JVMTI_ERROR_NONE) {
-            if (typeSig == sig) found = true;
-            g_jvmti->Deallocate((unsigned char*)name);
-            g_jvmti->Deallocate((unsigned char*)sig);
+// ---------------------------------------------------------------- apply
+
+bool JNIHelper::apply_account(const std::string& username,
+                              const std::string& uuid,
+                              const std::string& token) {
+    if (!attach()) return false;
+    JNIEnv* e = t_env;
+
+    // 1) net.minecraft.client.Minecraft.getInstance()
+    jclass mcClass = e->FindClass("net/minecraft/client/Minecraft");
+    if (!mcClass) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
+
+    jmethodID getInstance = e->GetStaticMethodID(
+        mcClass, "getInstance", "()Lnet/minecraft/client/Minecraft;");
+    if (!getInstance) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
+
+    jobject mc = e->CallStaticObjectMethod(mcClass, getInstance);
+    if (!mc) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
+
+    // 2) find the Session field on the Minecraft instance
+    jclass mcInstCls   = e->GetObjectClass(mc);
+    jclass classCls    = e->FindClass("java/lang/Class");
+    jclass fieldCls    = e->FindClass("java/lang/reflect/Field");
+
+    jmethodID fieldGet           = e->GetMethodID(fieldCls, "get", "(Ljava/lang/Object;)Ljava/lang/Object;");
+    jmethodID fieldSet           = e->GetMethodID(fieldCls, "set", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+    jmethodID fieldSetAccessible = e->GetMethodID(fieldCls, "setAccessible", "(Z)V");
+    jmethodID fieldGetType       = e->GetMethodID(fieldCls, "getType", "()Ljava/lang/Class;");
+    jmethodID fieldGetName       = e->GetMethodID(fieldCls, "getName", "()Ljava/lang/String;");
+    jmethodID classGetName       = e->GetMethodID(classCls, "getName", "()Ljava/lang/String;");
+
+    jobjectArray mcFields = call_getDeclaredFields(e, mcInstCls);
+    if (!mcFields) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
+
+    jobject session = nullptr;
+    jsize nf = e->GetArrayLength(mcFields);
+    for (jsize i = 0; i < nf && !session; ++i) {
+        jobject f = e->GetObjectArrayElement(mcFields, i);
+
+        jclass ftype = static_cast<jclass>(e->CallObjectMethod(f, fieldGetType));
+        std::string typeName = jstr(e, static_cast<jstring>(e->CallObjectMethod(ftype, classGetName)));
+
+        if (typeName.find("Session") != std::string::npos) {
+            e->CallVoidMethod(f, fieldSetAccessible, JNI_TRUE);
+            session = e->CallObjectMethod(f, fieldGet, mc);
         }
     }
-    g_jvmti->Deallocate((unsigned char*)f);
-    return found;
-}
+    if (!session) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
 
-// Session class: has a GameProfile field (authlib not obfuscated).
-static std::string FindSession(const std::vector<Klass>& ks) {
-    for (auto& c : ks) {
-        if (c.sig.size() < 4 || c.sig[0] != 'L') continue;
-        if (c.sig.rfind("Ljava/", 0) == 0) continue;
-        if (c.sig.rfind("Ljavax/", 0) == 0) continue;
-        if (c.sig.rfind("Lsun/", 0) == 0) continue;
-        if (HasFieldOfType(c.k, "Lcom/mojang/authlib/GameProfile;"))
-            return c.sig;
-    }
-    return "";
-}
+    // 3) overwrite username / uuid / token on the Session instance
+    jclass sessionCls = e->GetObjectClass(session);
+    jobjectArray sFields = call_getDeclaredFields(e, sessionCls);
+    if (!sFields) { if (e->ExceptionCheck()) e->ExceptionClear(); return false; }
 
-// Minecraft class: has a field of Session type + a static self-typed field.
-static std::string FindMinecraft(const std::vector<Klass>& ks, const std::string& sessionSig) {
-    for (auto& c : ks) {
-        if (c.sig.size() < 4 || c.sig[0] != 'L') continue;
-        if (!HasFieldOfType(c.k, sessionSig)) continue;
-        // check for static self field
-        jint n = 0; jfieldID* f = nullptr;
-        if (g_jvmti->GetClassFields(c.k, &n, &f) != JVMTI_ERROR_NONE) continue;
-        bool selfStatic = false;
-        for (int i = 0; i < n; i++) {
-            char *name, *sig; jint mods;
-            if (g_jvmti->GetFieldName(c.k, f[i], &name, &sig, nullptr) == JVMTI_ERROR_NONE) {
-                g_jvmti->GetFieldModifiers(c.k, f[i], &mods);
-                if ((mods & 0x0008) && c.sig == sig) selfStatic = true;
-                g_jvmti->Deallocate((unsigned char*)name);
-                g_jvmti->Deallocate((unsigned char*)sig);
-            }
+    jsize nsf = e->GetArrayLength(sFields);
+    for (jsize i = 0; i < nsf; ++i) {
+        jobject f = e->GetObjectArrayElement(sFields, i);
+        std::string name = jstr(e, static_cast<jstring>(e->CallObjectMethod(f, fieldGetName)));
+
+        std::string value;
+        if      ((name == "username")   && !username.empty()) value = username;
+        else if ((name == "uuid" || name == "playerUUID") && !uuid.empty()) value = uuid;
+        else if ((name == "token" || name == "accessToken" || name == "sessionToken")
+                 && !token.empty()) value = token;
+
+        if (!value.empty()) {
+            e->CallVoidMethod(f, fieldSetAccessible, JNI_TRUE);
+            jstring jval = e->NewStringUTF(value.c_str());
+            e->CallVoidMethod(f, fieldSet, session, jval);
+            e->DeleteLocalRef(jval);
         }
-        g_jvmti->Deallocate((unsigned char*)f);
-        if (selfStatic) return c.sig;
+        e->DeleteLocalRef(f);
     }
-    return "";
-}
-
-static jobject GetSingleton(JNIEnv* env, jclass k, const std::string& sig) {
-    jint n = 0; jfieldID* f = nullptr;
-    if (g_jvmti->GetClassFields(k, &n, &f) != JVMTI_ERROR_NONE) return nullptr;
-    jobject r = nullptr;
-    for (int i = 0; i < n && !r; i++) {
-        char *name, *fsig; jint mods;
-        if (g_jvmti->GetFieldName(k, f[i], &name, &fsig, nullptr) == JVMTI_ERROR_NONE) {
-            g_jvmti->GetFieldModifiers(k, f[i], &mods);
-            if ((mods & 0x0008) && sig == fsig)
-                r = env->GetStaticObjectField(k, f[i]);
-            g_jvmti->Deallocate((unsigned char*)name);
-            g_jvmti->Deallocate((unsigned char*)fsig);
-        }
-    }
-    g_jvmti->Deallocate((unsigned char*)f);
-    return r;
-}
-
-static jfieldID GetFieldBySig(JNIEnv*, jclass k, const std::string& sig) {
-    jint n = 0; jfieldID* f = nullptr;
-    if (g_jvmti->GetClassFields(k, &n, &f) != JVMTI_ERROR_NONE) return nullptr;
-    jfieldID r = nullptr;
-    for (int i = 0; i < n && !r; i++) {
-        char *name, *fsig;
-        if (g_jvmti->GetFieldName(k, f[i], &name, &fsig, nullptr) == JVMTI_ERROR_NONE) {
-            if (sig == fsig) r = f[i];
-            g_jvmti->Deallocate((unsigned char*)name);
-            g_jvmti->Deallocate((unsigned char*)fsig);
-        }
-    }
-    g_jvmti->Deallocate((unsigned char*)f);
-    return r;
-}
-
-bool SwitchAccount(const std::string& username) {
-    if (!Init()) return false;
-    JNIEnv* env = nullptr;
-    bool attached = false;
-    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_8) != JNI_OK) {
-        if (g_jvm->AttachCurrentThread((void**)&env, nullptr) != JNI_OK) return false;
-        attached = true;
-    }
-
-    auto ks = LoadClasses();
-    std::string sessionSig = FindSession(ks);
-    if (sessionSig.empty()) { if (attached) g_jvm->DetachCurrentThread(); return false; }
-
-    std::string mcSig = FindMinecraft(ks, sessionSig);
-    if (mcSig.empty()) { if (attached) g_jvm->DetachCurrentThread(); return false; }
-
-    jclass sessionClass = nullptr, mcClass = nullptr;
-    for (auto& c : ks) {
-        if (c.sig == sessionSig) sessionClass = c.k;
-        if (c.sig == mcSig)      mcClass      = c.k;
-    }
-    if (!sessionClass || !mcClass) { if (attached) g_jvm->DetachCurrentThread(); return false; }
-
-    jobject mcInstance = GetSingleton(env, mcClass, mcSig);
-    if (!mcInstance) { if (attached) g_jvm->DetachCurrentThread(); return false; }
-
-    jfieldID sessionField = GetFieldBySig(env, mcClass, sessionSig);
-    if (!sessionField) { if (attached) g_jvm->DetachCurrentThread(); return false; }
-
-    // Offline UUID: UUID.nameUUIDFromBytes(("OfflinePlayer:"+name).getBytes())
-    jclass uuidClass = env->FindClass("java/util/UUID");
-    jmethodID nameUUID = env->GetStaticMethodID(uuidClass, "nameUUIDFromBytes", "([B)Ljava/util/UUID;");
-    std::string seed = "OfflinePlayer:" + username;
-    jbyteArray bytes = env->NewByteArray((jsize)seed.size());
-    env->SetByteArrayRegion(bytes, 0, (jsize)seed.size(), (const jbyte*)seed.data());
-    jobject uuid = env->CallStaticObjectMethod(uuidClass, nameUUID, bytes);
-
-    jstring jname  = env->NewStringUTF(username.c_str());
-    jstring jtoken = env->NewStringUTF("0");
-
-    jobject newSession = nullptr;
-
-    // Modern ctor: (String, UUID, String, Optional)
-    jmethodID c1 = env->GetMethodID(sessionClass, "<init>",
-        "(Ljava/lang/String;Ljava/util/UUID;Ljava/lang/String;Ljava/util/Optional;)V");
-    if (c1) {
-        jclass opt = env->FindClass("java/util/Optional");
-        jmethodID empty = env->GetStaticMethodID(opt, "empty", "()Ljava/util/Optional;");
-        jobject e = env->CallStaticObjectMethod(opt, empty);
-        newSession = env->NewObject(sessionClass, c1, jname, uuid, jtoken, e);
-    }
-
-    // Legacy ctor: (String, String, String, String)
-    if (!newSession) {
-        env->ExceptionClear();
-        jmethodID c2 = env->GetMethodID(sessionClass, "<init>",
-            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
-        if (c2) {
-            jmethodID toString = env->GetMethodID(uuidClass, "toString", "()Ljava/lang/String;");
-            jstring us = (jstring)env->CallObjectMethod(uuid, toString);
-            jstring t  = env->NewStringUTF("legacy");
-            newSession = env->NewObject(sessionClass, c2, jname, us, jtoken, t);
-        }
-    }
-
-    if (!newSession || env->ExceptionCheck()) {
-        env->ExceptionClear();
-        if (attached) g_jvm->DetachCurrentThread();
-        return false;
-    }
-
-    env->SetObjectField(mcInstance, sessionField, newSession);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        if (attached) g_jvm->DetachCurrentThread();
-        return false;
-    }
-
-    if (attached) g_jvm->DetachCurrentThread();
     return true;
 }
+""")
 
-} // namespace jni_helper
-"""
-
-FILES["src/client/gui.h"] = r"""
+# ---------------------------------------------------------------- gui.h
+w("src/client/gui.h", r"""
 #pragma once
-namespace gui { void Render(); }
-"""
 
-FILES["src/client/gui.cpp"] = r"""
+namespace GUI {
+    void Render();
+    void Toggle();
+    bool IsVisible();
+}
+""")
+
+# ---------------------------------------------------------------- gui.cpp
+w("src/client/gui.cpp", r"""
 #include "gui.h"
 #include "accounts.h"
 #include "jni_helper.h"
+
 #include <imgui.h>
-#include <string>
-#include <vector>
+#include <cstring>
 
-namespace gui {
+static bool g_visible      = true;
+static char g_new_username[64]  = "";
+static char g_new_uuid[64]      = "";
+static char g_new_token[256]    = "";
 
-static char s_new[64] = "";
+void GUI::Toggle()       { g_visible = !g_visible; }
+bool GUI::IsVisible()    { return g_visible; }
 
-void Render() {
-    ImGui::SetNextWindowSize(ImVec2(430, 340), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Minecraft Offline Account Switcher", nullptr, ImGuiWindowFlags_NoCollapse);
+void GUI::Render() {
+    if (!g_visible) return;
 
-    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Press [UP ARROW] to open/close");
+    ImGui::SetNextWindowSize(ImVec2(440, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Alt Manager", &g_visible)) { ImGui::End(); return; }
+
+    ImGui::TextUnformatted("Accounts");
     ImGui::Separator();
 
-    auto& list = accounts::Get();
-    int cur = accounts::GetCurrentIndex();
+    auto accounts = AccountManager::instance().list();
+    int  current  = AccountManager::instance().current_index();
 
-    ImGui::Text("Accounts (%d):", (int)list.size());
-    ImGui::BeginChild("##list", ImVec2(0, 180), true);
-    for (int i = 0; i < (int)list.size(); i++) {
-        bool sel = (i == cur);
-        std::string label = list[i] + (sel ? "   [active]" : "");
-        if (ImGui::Selectable(label.c_str(), sel)) {
-            accounts::SetCurrent(i);
-            bool ok = jni_helper::SwitchAccount(list[i]);
-            (void)ok;
-        }
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Delete")) {
-                accounts::Remove(i);
-                ImGui::EndPopup();
-                break;
-            }
-            ImGui::EndPopup();
-        }
-    }
-    ImGui::EndChild();
+    for (int i = 0; i < (int)accounts.size(); ++i) {
+        const auto& a = accounts[i];
+        ImGui::PushID(i);
 
-    ImGui::InputText("Username", s_new, sizeof(s_new));
-    if (ImGui::Button("Add") && s_new[0]) {
-        accounts::Add(s_new);
-        s_new[0] = 0;
+        bool selected = (i == current);
+        if (ImGui::Selectable(a.username.c_str(), selected)) {
+            AccountManager::instance().set_current((size_t)i);
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Apply")) {
+            AccountManager::instance().set_current((size_t)i);
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X")) {
+            AccountManager::instance().remove((size_t)i);
+            ImGui::PopID();
+            break;
+        }
+        ImGui::PopID();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Switch now")) {
-        if (cur >= 0 && cur < (int)list.size())
-            jni_helper::SwitchAccount(list[cur]);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Add new account");
+    ImGui::InputText("Username", g_new_username, sizeof(g_new_username));
+    ImGui::InputText("UUID",     g_new_uuid,     sizeof(g_new_uuid));
+    ImGui::InputText("Token",    g_new_token,    sizeof(g_new_token));
+
+    if (ImGui::Button("Add")) {
+        Account a{g_new_username, g_new_uuid, g_new_token};
+        if (!a.username.empty()) {
+            AccountManager::instance().add(a);
+            std::memset(g_new_username, 0, sizeof(g_new_username));
+            std::memset(g_new_uuid,     0, sizeof(g_new_uuid));
+            std::memset(g_new_token,    0, sizeof(g_new_token));
+        }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Reload"))
-        accounts::Load();
 
     ImGui::End();
 }
+""")
 
-}
-"""
-
-FILES["src/client/hooks.h"] = r"""
+# ---------------------------------------------------------------- hooks.h
+w("src/client/hooks.h", r"""
 #pragma once
-#include <Windows.h>
-namespace hooks { void Init(HWND hwnd); }
-"""
 
-FILES["src/client/hooks.cpp"] = r"""
+namespace Hooks {
+    bool Install();
+    void Uninstall();
+}
+""")
+
+# ---------------------------------------------------------------- hooks.cpp
+w("src/client/hooks.cpp", r"""
 #include "hooks.h"
 #include "gui.h"
-#include <Windows.h>
+
 #include <MinHook.h>
+#include <windows.h>
+#include <GL/gl.h>
+
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_opengl3.h>
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND, UINT, WPARAM, LPARAM);
 
-namespace hooks {
+using SwapBuffersFn = BOOL(WINAPI*)(HDC);
 
-static HWND        g_hwnd      = nullptr;
-static WNDPROC     g_wndproc   = nullptr;
-static bool        g_imguiInit = false;
-static bool        g_visible   = false;
+static SwapBuffersFn g_origSwapBuffers = nullptr;
+static HWND          g_hwnd            = nullptr;
+static WNDPROC       g_origWndProc     = nullptr;
+static bool          g_imguiReady      = false;
 
-typedef BOOL(WINAPI* SwapBuffers_t)(HDC);
-static SwapBuffers_t g_origSwap = nullptr;
-
-LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_KEYDOWN && (wp == VK_UP || wp == VK_NUMPAD8)) {
-        g_visible = !g_visible;
-    }
-    if (g_visible) {
-        ImGui_ImplWin32_WndProcHandler(h, msg, wp, lp);
-        switch (msg) {
-            case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-            case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-            case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-            case WM_MOUSEMOVE:
-            case WM_MOUSEWHEEL:
-            case WM_KEYDOWN: case WM_KEYUP: case WM_CHAR:
-            case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-                return 0;
-        }
-    }
-    return CallWindowProc(g_wndproc, h, msg, wp, lp);
+static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g_imguiReady && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wp, lp))
+        return TRUE;
+    return CallWindowProc(g_origWndProc, hWnd, msg, wp, lp);
 }
 
-BOOL WINAPI hk_SwapBuffers(HDC hdc) {
-    if (!g_imguiInit) {
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        io.IniFilename = nullptr;
-        ImGui::StyleColorsDark();
-        ImGui_ImplWin32_Init(g_hwnd);
-        ImGui_ImplOpenGL3_Init("#version 150");
-        g_imguiInit = true;
+static BOOL WINAPI HookedSwapBuffers(HDC hdc) {
+    if (!g_imguiReady) {
+        g_hwnd = WindowFromDC(hdc);
+        if (g_hwnd) {
+            ImGui::CreateContext();
+            ImGui::StyleColorsDark();
+            ImGui_ImplWin32_Init(g_hwnd);
+            ImGui_ImplOpenGL3_Init("#version 130");
+            g_origWndProc = (WNDPROC)SetWindowLongPtr(
+                g_hwnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
+            g_imguiReady = true;
+        }
     }
 
-    if (g_visible) {
+    if (g_imguiReady) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        gui::Render();
+
+        GUI::Render();
+
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
-    return g_origSwap(hdc);
+
+    return g_origSwapBuffers(hdc);
 }
 
-void Init(HWND hwnd) {
-    g_hwnd = hwnd;
-    g_wndproc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
+bool Hooks::Install() {
+    if (MH_Initialize() != MH_OK) return false;
 
-    MH_Initialize();
+    HMODULE gdi = GetModuleHandleA("gdi32.dll");
+    if (!gdi) return false;
 
-    // GLFW uses SwapBuffers(hdc) — hook from gdi32 first, fallback to wglSwapBuffers.
-    void* target = (void*)GetProcAddress(GetModuleHandleA("gdi32.dll"), "SwapBuffers");
-    if (!target) target = (void*)GetProcAddress(GetModuleHandleA("opengl32.dll"), "wglSwapBuffers");
+    void* target = (void*)GetProcAddress(gdi, "SwapBuffers");
+    if (!target) return false;
 
-    if (target) {
-        MH_CreateHook(target, &hk_SwapBuffers, (void**)&g_origSwap);
-        MH_EnableHook(target);
-    }
+    if (MH_CreateHook(target, (LPVOID)&HookedSwapBuffers,
+                      (LPVOID*)&g_origSwapBuffers) != MH_OK)
+        return false;
+
+    return MH_EnableHook(target) == MH_OK;
 }
 
+void Hooks::Uninstall() {
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
 }
-"""
+""")
 
-FILES["src/client/client.cpp"] = r"""
-#include <Windows.h>
-#include <cstring>
+# ---------------------------------------------------------------- client.cpp
+w("src/client/client.cpp", r"""
 #include "hooks.h"
+#include "gui.h"
+#include "jni_helper.h"
+#include "accounts.h"
 
-static BOOL CALLBACK FindGameWindow(HWND w, LPARAM lp) {
-    DWORD wpid = 0;
-    GetWindowThreadProcessId(w, &wpid);
-    if (wpid != GetCurrentProcessId()) return TRUE;
-    if (!IsWindowVisible(w)) return TRUE;
-    char cls[256] = {};
-    GetClassNameA(w, cls, sizeof(cls));
-    // LWJGL/GLFW windows: "GLFW30" (GLFW 3.x), "LWJGL", or fallback: has title "Minecraft"
-    bool glfw = (strstr(cls, "GLFW") || strstr(cls, "LWJGL"));
-    char title[512] = {};
-    GetWindowTextA(w, title, sizeof(title));
-    bool mc = (strstr(title, "Minecraft") != nullptr);
-    if (glfw || mc) {
-        *reinterpret_cast<HWND*>(lp) = w;
-        return FALSE;
-    }
-    return TRUE;
-}
+#include <windows.h>
+#include <chrono>
+#include <thread>
 
-static DWORD WINAPI BootThread(LPVOID) {
-    HWND hwnd = nullptr;
-    for (int i = 0; i < 600 && !hwnd; i++) {
-        EnumWindows(FindGameWindow, (LPARAM)&hwnd);
-        if (!hwnd) Sleep(100);
-    }
-    if (hwnd) {
-        Sleep(500); // let the game settle
-        hooks::Init(hwnd);
+static HMODULE g_self = nullptr;
+
+static DWORD WINAPI MainThread(LPVOID) {
+    // Wait for the host JVM to be fully initialised.
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    JNIHelper::attach();
+    Hooks::Install();
+
+    // Keep re-applying the selected account (Minecraft may cache it).
+    while (true) {
+        if (AccountManager::instance().has_current()) {
+            auto a = AccountManager::instance().current();
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     return 0;
 }
 
-BOOL WINAPI DllMain(HMODULE mod, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(mod);
-        HANDLE t = CreateThread(nullptr, 0, BootThread, nullptr, 0, nullptr);
-        if (t) CloseHandle(t);
+        g_self = hMod;
+        DisableThreadLibraryCalls(hMod);
+        CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
     }
     return TRUE;
 }
-"""
+""")
 
-# ---------------- INJECTOR ----------------
-
-FILES["src/injector/injector.cpp"] = r"""
-#include <Windows.h>
-#include <TlHelp32.h>
-#include <filesystem>
-#include <string>
+# ---------------------------------------------------------------- injector.cpp
+w("src/injector/injector.cpp", r"""
+#include <windows.h>
+#include <tlhelp32.h>
 #include <cstdio>
+#include <string>
 
 static DWORD FindProcess(const wchar_t* name) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
-    PROCESSENTRY32W pe{}; pe.dwSize = sizeof(pe);
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
     DWORD pid = 0;
+
     if (Process32FirstW(snap, &pe)) {
         do {
-            if (_wcsicmp(pe.szExeFile, name) == 0) { pid = pe.th32ProcessID; break; }
+            if (_wcsicmp(pe.szExeFile, name) == 0) {
+                pid = pe.th32ProcessID;
+                break;
+            }
         } while (Process32NextW(snap, &pe));
     }
     CloseHandle(snap);
     return pid;
 }
 
-static bool Inject(DWORD pid, const std::wstring& dll) {
+int wmain(int argc, wchar_t** argv) {
+    if (argc < 2) {
+        std::wprintf(L"Usage: injector.exe <path-to-client.dll> [process.exe]\n");
+        return 1;
+    }
+
+    const wchar_t* dllPath  = argv[1];
+    const wchar_t* procName = (argc >= 3) ? argv[2] : L"javaw.exe";
+
+    DWORD pid = FindProcess(procName);
+    if (!pid) {
+        std::wprintf(L"Process '%ls' not found.\n", procName);
+        return 2;
+    }
+
     HANDLE proc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!proc) return false;
+    if (!proc) {
+        std::wprintf(L"OpenProcess failed: %lu\n", GetLastError());
+        return 3;
+    }
 
-    SIZE_T size = (dll.size() + 1) * sizeof(wchar_t);
-    LPVOID remote = VirtualAllocEx(proc, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) { CloseHandle(proc); return false; }
+    SIZE_T pathLen = (wcslen(dllPath) + 1) * sizeof(wchar_t);
+    LPVOID remote = VirtualAllocEx(proc, nullptr, pathLen,
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote) {
+        CloseHandle(proc);
+        return 4;
+    }
 
-    WriteProcessMemory(proc, remote, dll.c_str(), size, nullptr);
+    WriteProcessMemory(proc, remote, dllPath, pathLen, nullptr);
 
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     auto loadLib = (LPTHREAD_START_ROUTINE)GetProcAddress(k32, "LoadLibraryW");
 
     HANDLE th = CreateRemoteThread(proc, nullptr, 0, loadLib, remote, 0, nullptr);
-    if (!th) { VirtualFreeEx(proc, remote, 0, MEM_RELEASE); CloseHandle(proc); return false; }
+    if (!th) {
+        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+        CloseHandle(proc);
+        return 5;
+    }
 
-    WaitForSingleObject(th, 10000);
+    WaitForSingleObject(th, INFINITE);
+
     CloseHandle(th);
     VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
     CloseHandle(proc);
-    return true;
-}
 
-int wmain(int argc, wchar_t** argv) {
-    std::wstring dll;
-    if (argc >= 2) dll = argv[1];
-    else {
-        wchar_t buf[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        dll = (std::filesystem::path(buf).parent_path() / L"client.dll").wstring();
-    }
-
-    if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        wprintf(L"[!] client.dll not found at: %s\n", dll.c_str());
-        return 1;
-    }
-
-    wprintf(L"[*] Waiting for javaw.exe / java.exe...\n");
-    DWORD pid = 0;
-    while (!pid) {
-        pid = FindProcess(L"javaw.exe");
-        if (!pid) pid = FindProcess(L"java.exe");
-        if (!pid) Sleep(1000);
-    }
-
-    wprintf(L"[*] Found process PID %lu. Injecting %s...\n", pid, dll.c_str());
-    if (!Inject(pid, dll)) {
-        wprintf(L"[!] Injection failed. Try running as Administrator.\n");
-        return 1;
-    }
-    wprintf(L"[+] Injected successfully. Press the UP ARROW in-game to open the UI.\n");
+    std::wprintf(L"Injected '%ls' into PID %lu.\n", dllPath, pid);
     return 0;
 }
-"""
+""")
 
-# ---------------- README ----------------
+# ---------------------------------------------------------------- README
+w("README.md", r"""
+# Alt Manager
 
-FILES["README.md"] = r"""
-# Minecraft Offline Account Switcher
+Injects `client.dll` into a running Minecraft (Java) process and lets you
+swap the game account from an in-game ImGui overlay.
 
-In-game overlay to switch offline Minecraft accounts. Opens with the **UP ARROW** key.
+## Build
 
-## How to use
+```bash
+python create_account.py
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
 
-1. Push this repo to GitHub.
-2. The `Build Client` workflow runs automatically and produces an artifact `mc-account-switcher`.
-3. Download the artifact — it contains `client.dll` and `injector.exe`.
-4. Put them in the same folder.
-5. Launch Minecraft.
-6. Run `injector.exe` (as Administrator if needed) — it auto-detects `javaw.exe`.
-7. In-game, press **UP ARROW** to open the switcher.
-8. Add a username, click it to switch — the live game's Session is replaced via JNI.
+Artifacts:
+- `build/client.dll`
+- `build/injector.exe`
 
-Accounts are stored in `%APPDATA%\.mc-account-switcher\accounts.txt`.
+## Run
 
-## Notes
+1. Launch Minecraft (Java Edition).
+2. `injector.exe client.dll`  (defaults to `javaw.exe`).
+3. Press the injected overlay — add accounts, click **Apply**.
 
-- Offline UUIDs are computed the same way vanilla does (`UUID.nameUUIDFromBytes("OfflinePlayer:"+name)`).
-- On some versions the `Session` constructor signature differs; the DLL tries the modern ctor
-  `(String, UUID, String, Optional)` then falls back to the legacy `(String, String, String, String)`.
-"""
+## How it works
 
-def main():
-    for rel, content in FILES.items():
-        p = ROOT / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content.lstrip("\n"), encoding="utf-8")
-        print(f"[+] {rel}")
-    print("\nProject generated successfully.")
+- `client.dll` attaches to the running JVM via `JNI_GetCreatedJavaVMs`.
+- A background thread reaches into `net.minecraft.client.Minecraft.getInstance()`,
+  finds the live `Session` object by reflection, and overwrites
+  `username` / `uuid` / `token`.
+- `wglSwapBuffers` is hooked with MinHook to render the ImGui overlay.
+""")
 
-if __name__ == "__main__":
-    main()
+print("")
+print("Project generated successfully.")

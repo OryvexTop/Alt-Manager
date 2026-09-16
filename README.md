@@ -1,22 +1,31 @@
-# Minecraft Offline Account Switcher
 
-In-game overlay to switch offline Minecraft accounts. Opens with the **UP ARROW** key.
+# Alt Manager
 
-## How to use
+Injects `client.dll` into a running Minecraft (Java) process and lets you
+swap the game account from an in-game ImGui overlay.
 
-1. Push this repo to GitHub.
-2. The `Build Client` workflow runs automatically and produces an artifact `mc-account-switcher`.
-3. Download the artifact — it contains `client.dll` and `injector.exe`.
-4. Put them in the same folder.
-5. Launch Minecraft.
-6. Run `injector.exe` (as Administrator if needed) — it auto-detects `javaw.exe`.
-7. In-game, press **UP ARROW** to open the switcher.
-8. Add a username, click it to switch — the live game's Session is replaced via JNI.
+## Build
 
-Accounts are stored in `%APPDATA%\.mc-account-switcher\accounts.txt`.
+```bash
+python create_account.py
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
 
-## Notes
+Artifacts:
+- `build/client.dll`
+- `build/injector.exe`
 
-- Offline UUIDs are computed the same way vanilla does (`UUID.nameUUIDFromBytes("OfflinePlayer:"+name)`).
-- On some versions the `Session` constructor signature differs; the DLL tries the modern ctor
-  `(String, UUID, String, Optional)` then falls back to the legacy `(String, String, String, String)`.
+## Run
+
+1. Launch Minecraft (Java Edition).
+2. `injector.exe client.dll`  (defaults to `javaw.exe`).
+3. Press the injected overlay — add accounts, click **Apply**.
+
+## How it works
+
+- `client.dll` attaches to the running JVM via `JNI_GetCreatedJavaVMs`.
+- A background thread reaches into `net.minecraft.client.Minecraft.getInstance()`,
+  finds the live `Session` object by reflection, and overwrites
+  `username` / `uuid` / `token`.
+- `wglSwapBuffers` is hooked with MinHook to render the ImGui overlay.
