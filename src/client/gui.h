@@ -1,2 +1,8 @@
+
 #pragma once
-namespace gui { void Render(); }
+
+namespace GUI {
+    void Render();
+    void Toggle();
+    bool IsVisible();
+}

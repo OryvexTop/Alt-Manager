@@ -1,60 +1,70 @@
+
 #include "gui.h"
 #include "accounts.h"
 #include "jni_helper.h"
+
 #include <imgui.h>
-#include <string>
-#include <vector>
+#include <cstring>
 
-namespace gui {
+static bool g_visible      = true;
+static char g_new_username[64]  = "";
+static char g_new_uuid[64]      = "";
+static char g_new_token[256]    = "";
 
-static char s_new[64] = "";
+void GUI::Toggle()       { g_visible = !g_visible; }
+bool GUI::IsVisible()    { return g_visible; }
 
-void Render() {
-    ImGui::SetNextWindowSize(ImVec2(430, 340), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Minecraft Offline Account Switcher", nullptr, ImGuiWindowFlags_NoCollapse);
+void GUI::Render() {
+    if (!g_visible) return;
 
-    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Press [UP ARROW] to open/close");
+    ImGui::SetNextWindowSize(ImVec2(440, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Alt Manager", &g_visible)) { ImGui::End(); return; }
+
+    ImGui::TextUnformatted("Accounts");
     ImGui::Separator();
 
-    auto& list = accounts::Get();
-    int cur = accounts::GetCurrentIndex();
+    auto accounts = AccountManager::instance().list();
+    int  current  = AccountManager::instance().current_index();
 
-    ImGui::Text("Accounts (%d):", (int)list.size());
-    ImGui::BeginChild("##list", ImVec2(0, 180), true);
-    for (int i = 0; i < (int)list.size(); i++) {
-        bool sel = (i == cur);
-        std::string label = list[i] + (sel ? "   [active]" : "");
-        if (ImGui::Selectable(label.c_str(), sel)) {
-            accounts::SetCurrent(i);
-            bool ok = jni_helper::SwitchAccount(list[i]);
-            (void)ok;
-        }
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Delete")) {
-                accounts::Remove(i);
-                ImGui::EndPopup();
-                break;
-            }
-            ImGui::EndPopup();
-        }
-    }
-    ImGui::EndChild();
+    for (int i = 0; i < (int)accounts.size(); ++i) {
+        const auto& a = accounts[i];
+        ImGui::PushID(i);
 
-    ImGui::InputText("Username", s_new, sizeof(s_new));
-    if (ImGui::Button("Add") && s_new[0]) {
-        accounts::Add(s_new);
-        s_new[0] = 0;
+        bool selected = (i == current);
+        if (ImGui::Selectable(a.username.c_str(), selected)) {
+            AccountManager::instance().set_current((size_t)i);
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Apply")) {
+            AccountManager::instance().set_current((size_t)i);
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X")) {
+            AccountManager::instance().remove((size_t)i);
+            ImGui::PopID();
+            break;
+        }
+        ImGui::PopID();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Switch now")) {
-        if (cur >= 0 && cur < (int)list.size())
-            jni_helper::SwitchAccount(list[cur]);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Add new account");
+    ImGui::InputText("Username", g_new_username, sizeof(g_new_username));
+    ImGui::InputText("UUID",     g_new_uuid,     sizeof(g_new_uuid));
+    ImGui::InputText("Token",    g_new_token,    sizeof(g_new_token));
+
+    if (ImGui::Button("Add")) {
+        Account a{g_new_username, g_new_uuid, g_new_token};
+        if (!a.username.empty()) {
+            AccountManager::instance().add(a);
+            std::memset(g_new_username, 0, sizeof(g_new_username));
+            std::memset(g_new_uuid,     0, sizeof(g_new_uuid));
+            std::memset(g_new_token,    0, sizeof(g_new_token));
+        }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Reload"))
-        accounts::Load();
 
     ImGui::End();
-}
-
 }

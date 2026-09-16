@@ -1,52 +1,50 @@
+
 #include "accounts.h"
-#include <Windows.h>
-#include <ShlObj.h>
-#include <fstream>
 
-namespace accounts {
-    static std::vector<std::string> s_list;
-    static int s_current = -1;
-    static std::string s_path;
+AccountManager& AccountManager::instance() {
+    static AccountManager inst;
+    return inst;
+}
 
-    static std::string Path() {
-        char buf[MAX_PATH] = {};
-        SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf);
-        std::string dir = std::string(buf) + "\\.mc-account-switcher";
-        CreateDirectoryA(dir.c_str(), nullptr);
-        return dir + "\\accounts.txt";
-    }
+void AccountManager::add(const Account& acc) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    accounts_.push_back(acc);
+    if (current_ < 0) current_ = 0;
+}
 
-    void Load() {
-        s_path = Path();
-        s_list.clear();
-        s_current = -1;
-        std::ifstream f(s_path);
-        std::string line;
-        while (std::getline(f, line)) {
-            if (line.empty()) continue;
-            if (line[0] == '*') { s_current = (int)s_list.size(); line = line.substr(1); }
-            s_list.push_back(line);
-        }
-        if (s_current < 0 && !s_list.empty()) s_current = 0;
-    }
+bool AccountManager::remove(size_t index) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (index >= accounts_.size()) return false;
+    accounts_.erase(accounts_.begin() + index);
+    if (accounts_.empty()) current_ = -1;
+    else if (current_ >= (int)accounts_.size()) current_ = (int)accounts_.size() - 1;
+    return true;
+}
 
-    void Save() {
-        if (s_path.empty()) s_path = Path();
-        std::ofstream f(s_path, std::ios::trunc);
-        for (size_t i = 0; i < s_list.size(); i++) {
-            if ((int)i == s_current) f << "*";
-            f << s_list[i] << "\n";
-        }
-    }
+bool AccountManager::set_current(size_t index) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (index >= accounts_.size()) return false;
+    current_ = (int)index;
+    return true;
+}
 
-    std::vector<std::string>& Get() { if (s_path.empty()) Load(); return s_list; }
-    int  GetCurrentIndex() { if (s_path.empty()) Load(); return s_current; }
-    void SetCurrent(int i) { if (i >= 0 && i < (int)s_list.size()) { s_current = i; Save(); } }
-    void Add(const std::string& n) { s_list.push_back(n); if (s_current < 0) s_current = 0; Save(); }
-    void Remove(int i) {
-        if (i < 0 || i >= (int)s_list.size()) return;
-        s_list.erase(s_list.begin() + i);
-        if (s_current >= (int)s_list.size()) s_current = (int)s_list.size() - 1;
-        Save();
-    }
+Account AccountManager::current() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (current_ < 0 || current_ >= (int)accounts_.size()) return {};
+    return accounts_[current_];
+}
+
+int AccountManager::current_index() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return current_;
+}
+
+bool AccountManager::has_current() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return current_ >= 0 && current_ < (int)accounts_.size();
+}
+
+std::vector<Account> AccountManager::list() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return accounts_;
 }

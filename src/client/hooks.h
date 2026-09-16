@@ -1,3 +1,7 @@
+
 #pragma once
-#include <Windows.h>
-namespace hooks { void Init(HWND hwnd); }
+
+namespace Hooks {
+    bool Install();
+    void Uninstall();
+}

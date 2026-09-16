@@ -1,44 +1,38 @@
-#include <Windows.h>
-#include <cstring>
+
 #include "hooks.h"
+#include "gui.h"
+#include "jni_helper.h"
+#include "accounts.h"
 
-static BOOL CALLBACK FindGameWindow(HWND w, LPARAM lp) {
-    DWORD wpid = 0;
-    GetWindowThreadProcessId(w, &wpid);
-    if (wpid != GetCurrentProcessId()) return TRUE;
-    if (!IsWindowVisible(w)) return TRUE;
-    char cls[256] = {};
-    GetClassNameA(w, cls, sizeof(cls));
-    // LWJGL/GLFW windows: "GLFW30" (GLFW 3.x), "LWJGL", or fallback: has title "Minecraft"
-    bool glfw = (strstr(cls, "GLFW") || strstr(cls, "LWJGL"));
-    char title[512] = {};
-    GetWindowTextA(w, title, sizeof(title));
-    bool mc = (strstr(title, "Minecraft") != nullptr);
-    if (glfw || mc) {
-        *reinterpret_cast<HWND*>(lp) = w;
-        return FALSE;
-    }
-    return TRUE;
-}
+#include <windows.h>
+#include <chrono>
+#include <thread>
 
-static DWORD WINAPI BootThread(LPVOID) {
-    HWND hwnd = nullptr;
-    for (int i = 0; i < 600 && !hwnd; i++) {
-        EnumWindows(FindGameWindow, (LPARAM)&hwnd);
-        if (!hwnd) Sleep(100);
-    }
-    if (hwnd) {
-        Sleep(500); // let the game settle
-        hooks::Init(hwnd);
+static HMODULE g_self = nullptr;
+
+static DWORD WINAPI MainThread(LPVOID) {
+    // Wait for the host JVM to be fully initialised.
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    JNIHelper::attach();
+    Hooks::Install();
+
+    // Keep re-applying the selected account (Minecraft may cache it).
+    while (true) {
+        if (AccountManager::instance().has_current()) {
+            auto a = AccountManager::instance().current();
+            JNIHelper::apply_account(a.username, a.uuid, a.token);
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     return 0;
 }
 
-BOOL WINAPI DllMain(HMODULE mod, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(mod);
-        HANDLE t = CreateThread(nullptr, 0, BootThread, nullptr, 0, nullptr);
-        if (t) CloseHandle(t);
+        g_self = hMod;
+        DisableThreadLibraryCalls(hMod);
+        CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
     }
     return TRUE;
 }
