@@ -35,29 +35,17 @@ jobs:
         with:
           arch: x64
 
-      - name: Setup CMake
+      - name: Setup CMake + Ninja
         uses: lukka/get-cmake@latest
-
-      - name: Verify create_account.py exists at repo root
-        shell: pwsh
-        run: |
-          if (-not (Test-Path -LiteralPath 'create_account.py')) {
-            throw "create_account.py is missing at the repo root. Upload it to the top level of the repo."
-          }
-          Get-Item create_account.py | Format-List Name, Length, FullName
 
       - name: Generate project structure (create_account.py)
         run: python create_account.py
 
-      - name: Show generated tree (debug)
-        shell: pwsh
-        run: Get-ChildItem -Recurse -File | Select-Object -ExpandProperty FullName
-
-      - name: Configure CMake
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Configure CMake (Ninja)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build (Release)
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --parallel
 
       - name: Locate built binaries
         id: find
