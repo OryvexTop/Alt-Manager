@@ -1,0 +1,107 @@
+name: Build Client
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build client.dll + injector.exe
+    runs-on: windows-latest
+
+    env:
+      BUILD_TYPE: Release
+      JAVA_VERSION: '17'
+      PYTHON_VERSION: '3.11'
+
+    steps:
+      # ---------- Checkout ----------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------- Toolchain ----------
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Java ${{ env.JAVA_VERSION }} (provides jni.h for the JVM bridge)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: x64
+
+      - name: Setup MSVC (Visual Studio x64 toolchain)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      # ---------- Generate the project with create_account.py ----------
+      - name: Generate project structure (create_account.py)
+        run: python create_account.py
+
+      - name: Show generated tree (debug)
+        run: |
+          Get-ChildItem -Recurse -File | Select-Object -ExpandProperty FullName
+        shell: pwsh
+
+      # ---------- Configure & Build ----------
+      - name: Configure CMake
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build (Release)
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      # ---------- Locate artifacts ----------
+      - name: Locate built binaries
+        id: find
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter client.dll   -File | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Filter injector.exe -File | Select-Object -First 1
+          if (-not $dll) { throw "client.dll was not produced by the build" }
+          if (-not $exe) { throw "injector.exe was not produced by the build" }
+          Write-Host "client.dll   -> $($dll.FullName)"
+          Write-Host "injector.exe -> $($exe.FullName)"
+          "dll=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ---------- Package ----------
+      - name: Stage release folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "${{ steps.find.outputs.dll }}" dist/client.dll   -Force
+          Copy-Item "${{ steps.find.outputs.exe }}" dist/injector.exe -Force
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload artifact (mc-account-switcher)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mc-account-switcher
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---------- Also attach to release on tag push ----------
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath mc-account-switcher-${{ github.ref_name }}.zip
+
+      - name: Create / update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mc-account-switcher-${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
