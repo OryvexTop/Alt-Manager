@@ -1,77 +1,46 @@
-name: Build Client
+name: Build client.dll + injector.exe
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
+    branches: [ main ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Build client.dll + injector.exe
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # اگر ساب‌ماژول داری مفید است
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Setup Java 17 (provides jni.h for the JVM bridge)
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          architecture: x64
 
-      - name: Setup MSVC (Visual Studio x64 toolchain)
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Setup CMake + Ninja
-        uses: lukka/get-cmake@latest
+      - uses: lukka/get-cmake@latest
 
-      - name: Generate project structure (create_account.py)
+      - name: Generate project
         run: python create_account.py
 
-      - name: Configure CMake (Ninja)
+      - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build (Release)
-        run: cmake --build build --parallel
+      - name: Build
+        run: cmake --build build --config Release
 
-      - name: Locate built binaries
-        id: find
-        shell: pwsh
-        run: |
-          $dll = Get-ChildItem -Recurse -Filter client.dll   -File | Select-Object -First 1
-          $exe = Get-ChildItem -Recurse -Filter injector.exe -File | Select-Object -First 1
-          if (-not $dll) { throw "client.dll was not produced by the build" }
-          if (-not $exe) { throw "injector.exe was not produced by the build" }
-          Write-Host "client.dll   -> $($dll.FullName)"
-          Write-Host "injector.exe -> $($exe.FullName)"
-          "dll=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Stage release folder
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "${{ steps.find.outputs.dll }}" dist/client.dll   -Force
-          Copy-Item "${{ steps.find.outputs.exe }}" dist/injector.exe -Force
-          Get-ChildItem dist | Format-Table Name, Length
-
-      - name: Upload artifact (mc-account-switcher)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: mc-account-switcher
-          path: dist/
-          if-no-files-found: error
-          retention-days: 30
+          name: alt-manager-binaries
+          path: |
+            build/client.dll
+            build/injector.exe
